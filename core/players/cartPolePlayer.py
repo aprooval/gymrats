@@ -1,5 +1,5 @@
 #PLAY WITH TRAINED MODEL
-from agent.DQN import DQN as dqn
+from agent.dqnAgent.DQN import DQN as dqn
 
 import torch as T
 import numpy as np

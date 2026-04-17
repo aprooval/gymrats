@@ -1,4 +1,4 @@
-from agent.Agent import Agent
+from agent.dqnAgent.Agent import Agent
 from utils.PlotUtils import PlotUtils as plot
 
 import numpy as np
