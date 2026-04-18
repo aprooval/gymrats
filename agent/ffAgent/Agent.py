@@ -6,8 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 class Agent:
-    """Generic feedforward agent — wraps FF network with optimizer and
-    predict/train interface. Problem-specific wiring lives in players."""
+    #TODO: add online learning capability
     def __init__(self, inDim:int, outDim:int,
                  hiddenDim:int=128, lr:float=1e-3):
         self._device = T.device("mps" if T.backends.mps.is_available()
@@ -16,13 +15,7 @@ class Agent:
         self.optimizer = optim.Adam(self.net.parameters(), lr=lr)
         self._criterion = nn.MSELoss()
 
-    def predict(self, observation:np.ndarray) -> np.ndarray:
-        """Forward pass, returns output as numpy."""
-        state = T.tensor(observation, dtype=T.float32).to(self._device)
-        with T.no_grad():
-            out = self.net(state)
-        return out.cpu().numpy()
-
+    #behavior cloning
     def trainStep(self, inputs:np.ndarray, targets:np.ndarray) -> float:
         """Single gradient step. Returns MSE loss value."""
         self.optimizer.zero_grad()
@@ -34,6 +27,14 @@ class Agent:
         loss.backward()
         self.optimizer.step()
         return loss.item()
+
+    #shared, behavior cloning and online learning
+    def predict(self, observation:np.ndarray) -> np.ndarray:
+        #forward pass
+        state = T.tensor(observation, dtype=T.float32).to(self._device)
+        with T.no_grad():
+            out = self.net(state)
+        return out.cpu().numpy()
 
     def save(self, path:str) -> None:
         T.save(self.net.state_dict(), path)
