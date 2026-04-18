@@ -18,50 +18,19 @@ class Agent:
         self.actSpace = actSpace
 
         #kwargs
-        if "MEM_CAPACITY" in hyperparams.keys():
-            self.stateMem     = mem(hyperparams["MEM_CAPACITY"],
-                                    np.float32, *obsDims)
-            self.nextStateMem = mem(hyperparams["MEM_CAPACITY"],
-                                    np.float32, *obsDims)
-            self.actionMem    = mem(hyperparams["MEM_CAPACITY"],
-                                    np.int64, *actDims)
-            self.rewardMem    = mem(hyperparams["MEM_CAPACITY"],
-                                    np.float32)
-            self.doneMem      = mem(hyperparams["MEM_CAPACITY"],np.bool_)
-        else:
-            self.stateMem     = mem(100000, np.float32, *obsDims)
-            self.nextStateMem = mem(100000, np.float32, *obsDims)
-            self.actionMem    = mem(100000, np.int64,   *actDims) 
-            self.rewardMem    = mem(100000, np.float32) 
-            self.doneMem      = mem(100000, np.bool_)
-        if "LR" in hyperparams.keys():
-            self.lr = hyperparams["LR"]
-        else:
-            self.lr = 1e-4
-        if "TAU" in hyperparams.keys():
-            self.tau = hyperparams["TAU"]
-        else:
-            self.tau = 0.005
-        if "GAMMA" in hyperparams.keys():
-            self.gamma = hyperparams["GAMMA"]
-        else:
-            self.gamma = 0.99
-        if "EPS_END" in hyperparams.keys():
-            self.epsEnd = hyperparams["EPS_END"]
-        else:
-            self.epsEnd = 0.05
-        if "EPS_START" in hyperparams.keys():
-            self.epsStart = hyperparams["EPS_START"]
-        else:
-            self.epsStart = 0.9
-        if "EPS_DECAY" in hyperparams.keys():
-            self.epsDecay = hyperparams["EPS_DECAY"]
-        else:
-            self.epsDecay = 1000
-        if "BATCH_SIZE" in hyperparams.keys():
-            self.batchSize = hyperparams["BATCH_SIZE"]
-        else:
-            self.batchSize = 128
+        self.lr           = hyperparams.get("LR", 1e-4)
+        self.tau          = hyperparams.get("TAU", 0.005)
+        self.gamma        = hyperparams.get("GAMMA", 0.99)
+        self.epsEnd       = hyperparams.get("EPS_END", 0.05)
+        self.epsStart     = hyperparams.get("EPS_START", 0.9)
+        self.epsDecay     = hyperparams.get("EPS_DECAY", 1000)
+        self.batchSize    = hyperparams.get("BATCH_SIZE", 128)
+        capacity          = hyperparams.get("MEM_CAPACITY", 100000)
+        self.stateMem     = mem(capacity, np.float32, *obsDims)
+        self.nextStateMem = mem(capacity, np.float32, *obsDims)
+        self.actionMem    = mem(capacity, np.int64,   *actDims)
+        self.rewardMem    = mem(capacity, np.float32)
+        self.doneMem      = mem(capacity, np.bool_)
 
         #networks
         self.policyNet = dqn(obsDims, actSpace.size).to(self._device)
