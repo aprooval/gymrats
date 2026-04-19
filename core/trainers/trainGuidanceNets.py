@@ -15,21 +15,42 @@ from utils.PlotUtils             import PlotUtils as plot
 
 # paths
 PYFADS_DIR    = os.path.expanduser("~/Documents/source/pyfads")
-ENVELOPE_PATH = os.path.join(PYFADS_DIR, "grid_telemetry/envelope.json")
-TELEMETRY_DIR = os.path.join(PYFADS_DIR, "grid_telemetry")
+ENVELOPE_PATH = os.path.join(PYFADS_DIR, "exec/engagementEnvelope/grid_telemetry/envelope.json")
+TELEMETRY_DIR = os.path.join(PYFADS_DIR, "exec/engagementEnvelope/grid_telemetry")
 
 
-def loadTelemetry(dbPath:str, vid:str, table:str) -> np.ndarray:
-    """Load a telemetry variable from a saved .db file."""
+def loadTelemetry(dbPath:str, vid:str, varName:str) -> np.ndarray:
+    """
+    New schema: tables are {vid}_eom, {vid}_nav, {vid}_gdc with flattened columns.
+    Maps request names to actual DB column names (with Est suffix for nav estimates).
+    """
     conn = sqlite3.connect(dbPath)
     cur = conn.cursor()
-    cur.execute(f"SELECT data FROM {table} WHERE vid=?", (vid,))
+
+    # Map requested var names to actual DB column names
+    varMap = {
+        "posNed": ("eom", ["posNed_0", "posNed_1", "posNed_2"]),
+        "velNed": ("nav", ["velNedEst_0", "velNedEst_1", "velNedEst_2"]),
+        "mach": ("nav", ["machEst"]),
+        "pip": ("gdc", ["pip_0", "pip_1", "pip_2"]),
+        "accCmdNed": ("gdc", ["accCmdNed_0", "accCmdNed_1", "accCmdNed_2"]),
+    }
+
+    if varName not in varMap:
+        raise ValueError(f"Unknown variable: {varName}")
+
+    tablePrefix, cols = varMap[varName]
+    table = f"{vid}_{tablePrefix}"
+
+    colStr = ", ".join(f'"{c}"' for c in cols)
+    cur.execute(f"SELECT {colStr} FROM {table} ORDER BY time")
     rows = cur.fetchall()
     conn.close()
+
     if not rows:
-        raise ValueError(f"No data for vid={vid} table={table} in {dbPath}")
-    arrays = [np.frombuffer(r[0], dtype=np.float64) for r in rows]
-    return np.array(arrays)
+        raise ValueError(f"No data for {varName} in {table}")
+
+    return np.array(rows, dtype=np.float64)
 
 
 def loadEnvelope():
@@ -57,11 +78,11 @@ def buildDataset(envelope:list):
         dbPath = os.path.join(TELEMETRY_DIR, f"{vid}.db")
 
         # load per-timestep telemetry
-        posNed  = loadTelemetry(dbPath, vid, "eom_posNed")
-        velNed  = loadTelemetry(dbPath, vid, "nav_velNedEst")
-        mach    = loadTelemetry(dbPath, vid, "nav_mach")
-        pip     = loadTelemetry(dbPath, vid, "gdc_pip")
-        accCmd  = loadTelemetry(dbPath, vid, "gdc_accCmdNed")
+        posNed  = loadTelemetry(dbPath, vid, "posNed")
+        velNed  = loadTelemetry(dbPath, vid, "velNed")
+        mach    = loadTelemetry(dbPath, vid, "mach")
+        pip     = loadTelemetry(dbPath, vid, "pip")
+        accCmd  = loadTelemetry(dbPath, vid, "accCmdNed")
 
         nSteps = len(posNed)
         targetBroadcast = np.tile(targetPos, (nSteps, 1))
