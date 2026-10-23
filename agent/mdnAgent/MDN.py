@@ -52,6 +52,9 @@ class MDN(nn.Module):
         logits:   (..., K)
         """
         target = target.unsqueeze(-2)  # (..., 1, outDim)
+        # Floor logVars so vars >= ~4.5e-5; prevents NaN if a component
+        # collapses to a delta.
+        logVars = logVars.clamp(min=-10.0)
         vars = T.exp(logVars)          # (..., K, outDim)
 
         # log N(target | mean, var) per component, summed over outDim

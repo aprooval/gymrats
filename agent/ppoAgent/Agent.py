@@ -55,6 +55,11 @@ class Agent:
         self._bcNet    = None
         self._bcHidden = actorHidden
 
+        # running return normalizer — critic predicts (ret - mean) / std;
+        # act() un-normalizes before returning value for GAE
+        self._retMean = 0.0
+        self._retStd  = 1.0
+
     def _scale(self, tanhAct:T.Tensor) -> T.Tensor:
         return tanhAct * self.actScale + self.actBias
 
@@ -66,7 +71,8 @@ class Agent:
             dist    = self.actor.distribution(state)
             sample  = dist.sample()
             logProb = dist.log_prob(sample).sum(-1)
-            value   = self.critic(state).squeeze(-1)
+            rawVal  = self.critic(state).squeeze(-1)
+            value   = rawVal * self._retStd + self._retMean  # un-normalize for GAE
             envAct  = self._scale(sample.clamp(-1.0, 1.0))
         return (envAct.cpu().numpy(), sample.cpu().numpy(),
                 logProb.cpu().numpy(), value.cpu().numpy())
@@ -88,12 +94,18 @@ class Agent:
         #bootstrap value for the step after the rollout, finish GAE
         state = T.tensor(lastObs, dtype=T.float32).to(self._device)
         with T.no_grad():
-            lastValue = self.critic(state).squeeze(-1).cpu().numpy()
+            rawLast   = self.critic(state).squeeze(-1)
+            lastValue = (rawLast * self._retStd + self._retMean).cpu().numpy()
         self.buffer.computeGae(lastValue)
 
         #global advantage normalization
         adv = self.buffer.advantages
         self.buffer.advantages = (adv - adv.mean()) / (adv.std() + 1e-8)
+
+        # update running return normalizer from this rollout's returns
+        retAll = self.buffer.returns.flatten()
+        self._retMean = float(retAll.mean())
+        self._retStd  = max(float(retAll.std()), 1e-8)
 
         stats = {"policyLoss": 0.0, "valueLoss": 0.0,
                  "entropy": 0.0, "bcLoss": 0.0, "n": 0}
@@ -116,8 +128,9 @@ class Agent:
                 surr2 = T.clamp(ratio, 1.0 - self.clip, 1.0 + self.clip) * advB
                 policyLoss = -T.min(surr1, surr2).mean()
 
+                retB_n    = (retB - self._retMean) / self._retStd
                 value     = self.critic(obsB).squeeze(-1)
-                valueLoss = nn.functional.mse_loss(value, retB)
+                valueLoss = nn.functional.mse_loss(value, retB_n)
 
                 loss = (policyLoss + self.vfCoef * valueLoss
                         - self.entCoef * entropy)
@@ -147,6 +160,54 @@ class Agent:
         n = max(stats.pop("n"), 1)
         return {k: v / n for k, v in stats.items()}
 
+    def preTrainCritic(self, vecEnv, nRollouts:int, epochs:int=3) -> None:
+        """Collect nRollouts rollout blocks with the current actor (inference only),
+        compute GAE returns, then fit only the critic via MSE on those returns.
+        Warms up the value function before PPO to prevent critic divergence."""
+        allObs, allRet = [], []
+        for r in range(nRollouts):
+            obs = vecEnv.obs()
+            for _ in range(self.buffer.numSteps):
+                envAct, normAct, logp, val = self.act(obs)
+                rew, done, _ = vecEnv.step(envAct)
+                self.buffer.add(obs, normAct, logp, rew, done, val)
+                obs = vecEnv.obs()
+            state = T.tensor(obs, dtype=T.float32).to(self._device)
+            with T.no_grad():
+                rawLast = self.critic(state).squeeze(-1)
+                lastVal = (rawLast * self._retStd + self._retMean).cpu().numpy()
+            self.buffer.computeGae(lastVal)
+            allObs.append(self.buffer.obs.reshape(-1, self.obsDim).copy())
+            allRet.append(self.buffer.returns.flatten().copy())
+            self.buffer.reset()
+            if (r + 1) % max(nRollouts // 5, 1) == 0:
+                print(f"[criticPreTrain] collected {r+1}/{nRollouts} rollouts")
+
+        obsAll = np.concatenate(allObs, axis=0).astype(np.float32)
+        retAll = np.concatenate(allRet, axis=0).astype(np.float32)
+        self._retMean = float(retAll.mean())
+        self._retStd  = max(float(retAll.std()), 1e-8)
+        retNorm = (retAll - self._retMean) / self._retStd
+        print(f"[criticPreTrain] {len(obsAll)} transitions  "
+              f"retMean={self._retMean:.1f}  retStd={self._retStd:.1f}")
+
+        criticOpt = optim.Adam(self.critic.parameters(), lr=self.lr)
+        n = len(obsAll)
+        for ep in range(epochs):
+            idx = np.random.permutation(n)
+            tot, nb = 0.0, 0
+            for s in range(0, n, self.miniBatch):
+                b = idx[s:s + self.miniBatch]
+                obsB = T.tensor(obsAll[b]).to(self._device)
+                retB = T.tensor(retNorm[b]).to(self._device)
+                criticOpt.zero_grad()
+                loss = nn.functional.mse_loss(self.critic(obsB).squeeze(-1), retB)
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.maxGradNorm)
+                criticOpt.step()
+                tot += loss.item(); nb += 1
+            print(f"[criticPreTrain] epoch {ep}  valueLoss {tot/max(nb,1):.4f}")
+
     def setBcCoef(self, coef:float) -> None:
         """Trainer decays this toward 0 over training."""
         self.bcCoef = coef
@@ -167,10 +228,15 @@ class Agent:
         self.actor.load_state_dict(stateDict, strict=False)
 
     def save(self, path:str) -> None:
-        T.save({"actor":  self.actor.state_dict(),
-                "critic": self.critic.state_dict()}, path)
+        T.save({"actor":   self.actor.state_dict(),
+                "critic":  self.critic.state_dict(),
+                "retMean": self._retMean,
+                "retStd":  self._retStd}, path)
 
     def load(self, path:str) -> None:
         ckpt = T.load(path, map_location=self._device)
         self.actor.load_state_dict(ckpt["actor"])
         self.critic.load_state_dict(ckpt["critic"])
+        # older checkpoints predate the return normalizer
+        self._retMean = ckpt.get("retMean", 0.0)
+        self._retStd  = ckpt.get("retStd", 1.0)
